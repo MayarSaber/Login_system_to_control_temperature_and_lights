@@ -1,0 +1,1158 @@
+/**************************************************************/
+/****** Author 	: Mayar Saber 							 ******/
+/****** SW		: Login System to control Fan and Lights ******/
+/****** SWC		: ATMEGA32 - TIMERS_program.c			 ******/
+/****** Version : 01		 							 ******/
+/**************************************************************/
+/*LIB*/
+#include "STD_TYPES.h"
+#include "BIT_MATH.h"
+
+/*MCAL*/
+#include "TIMERS_interface.h"
+#include "TIMERS_private.h"
+#include "TIMERS_config.h"
+
+///------------------------------------------------------------------------------------------------------------------------
+///-------------------------------------------------------| TIMER0 |-------------------------------------------------------
+///------------------------------------------------------------------------------------------------------------------------
+
+/*Global pointer to function of Timer0 OVF */
+static  void (* TIMER0_pfOV)(void) = NULL;
+/*GLobal variable to hold the counter of OV numbers*/
+static  u16 TIMER0_u16OV_CounterValue;
+/*GLobal variable to hold the preload value of timer register*/
+static  u8	TIMER0_u8PreloadValue;
+
+
+/*Global pointer to function of Timer0 CTC */
+static  void (* TIMER0_pfCTC)(void) = NULL;
+/*GLobal variable to hold the counter of CTC numbers*/
+static  u16 TIMER0_u16CTC_CounterValue;
+
+
+/*Global Variable to check the Wave Generation Mode for ISR Function*/
+//static  u8  TIMER0_u8ModeCheck = 0xff;						//Normal Mode = 0 , CTC = 1
+
+///-------------------------------------------------------------------------------------------------------------------------
+
+u8 TIMER0_u8SetCallBack_OV(u16 Copy_u16CounterValue , void (*Copy_pf)(void))				//We've to make them only one Call back function
+/**Call Back function for Normal Mode**/
+{
+	u8 Local_u8ErrorState = STD_TYPES_OK;
+	if(Copy_pf != NULL)
+	{
+		TIMER0_pfOV = Copy_pf;
+		TIMER0_u16OV_CounterValue = Copy_u16CounterValue;
+	}
+	else
+	{
+		Local_u8ErrorState = STD_TYPES_NOK;
+	}
+
+	return Local_u8ErrorState;
+}
+
+///-------------------------------------------------------------------------------------------------------------------------
+
+u8 TIMER0_u8SetCallBack_CTC(u16 Copy_u16CounterValue , void (*Copy_pf)(void))
+/**Call Back function for CTC Mode**/
+{
+	u8 Local_u8ErrorState = STD_TYPES_OK;
+	if(Copy_pf != NULL)
+	{
+		TIMER0_pfCTC = Copy_pf;
+		TIMER0_u16CTC_CounterValue = Copy_u16CounterValue;
+	}
+	else
+	{
+		Local_u8ErrorState = STD_TYPES_NOK;
+	}
+
+	return Local_u8ErrorState;
+}
+
+///-------------------------------------------------------------------------------------------------------------------------
+
+void TIMER0_voidSetCompareMatchValue(u8 Copy_u8OCR0Value)
+{
+	/*Set OCR value*/
+	TIMER0_u8_OCR0_REG = Copy_u8OCR0Value;
+}
+
+///-------------------------------------------------------------------------------------------------------------------------
+
+void TIMER0_voidSetPReloadValue(u8 Copy_u8PreloadValue)
+{
+	/*Set preload value*/
+	TIMER0_u8_TCNT0_REG = Copy_u8PreloadValue;
+	/*pass preolad value to OV ISR function*/
+	TIMER0_u8PreloadValue = Copy_u8PreloadValue;
+}
+
+///-------------------------------------------------------------------------------------------------------------------------
+
+u8   TIMER0_u8GetCounterValue(u8 * Copy_pu8CounterValue)
+{
+	u8 Local_u8ErrorState = STD_TYPES_OK;
+	if(Copy_pu8CounterValue != NULL)
+	{
+		*Copy_pu8CounterValue = TIMER0_u8_TCNT0_REG;
+	}
+	else
+	{
+		Local_u8ErrorState = STD_TYPES_NOK;
+	}
+
+	return Local_u8ErrorState;
+}
+
+///-------------------------------------------------------------------------------------------------------------------------
+
+u8 TIMER0_voidInit(void)
+{
+	u8 Local_u8ErrorState = STD_TYPES_OK;
+	/*Wave Generation Mode Selection*/
+	#if TIMER0_u8_INITIAL_WAVE_GENERATION_MODE == TIMER0_u8_INITIAL_NORMAL_MODE				//00
+		CLR_BIT(TIMER0_u8_TCCR0_REG , TIMER0_TCCR0_WGM01_BIT);
+		CLR_BIT(TIMER0_u8_TCCR0_REG , TIMER0_TCCR0_WGM00_BIT);
+		//TIMER0_u8ModeCheck = 0;
+	#elif TIMER0_u8_INITIAL_WAVE_GENERATION_MODE == TIMER0_u8_INITIAL_PWM_PHASE_CORRECT		//01
+		CLR_BIT(TIMER0_u8_TCCR0_REG , TIMER0_TCCR0_WGM01_BIT);
+		SET_BIT(TIMER0_u8_TCCR0_REG , TIMER0_TCCR0_WGM00_BIT);
+		//TIMER0_u8ModeCheck = 2;
+	#elif TIMER0_u8_INITIAL_WAVE_GENERATION_MODE == TIMER0_u8_INITIAL_CTC					//10
+		SET_BIT(TIMER0_u8_TCCR0_REG , TIMER0_TCCR0_WGM01_BIT);
+		CLR_BIT(TIMER0_u8_TCCR0_REG , TIMER0_TCCR0_WGM00_BIT);
+		//TIMER0_u8ModeCheck = 1;
+	#elif TIMER0_u8_INITIAL_WAVE_GENERATION_MODE == TIMER0_u8_INITIAL_FAST_PWM				//11
+		SET_BIT(TIMER0_u8_TCCR0_REG , TIMER0_TCCR0_WGM01_BIT);
+		SET_BIT(TIMER0_u8_TCCR0_REG , TIMER0_TCCR0_WGM00_BIT);
+		//TIMER0_u8ModeCheck = 3;
+	#endif
+	
+	
+	/*Compare Match Output Mode Selection*/
+	switch(TIMER0_u8_INITIAL_COMPARE_MATCH_MODE)
+	{
+		case TIMER0_u8_INITIAL_NON_PWM_NORMAL_PORT_OPERATION_DIS_OC0:
+			if((TIMER0_u8_INITIAL_WAVE_GENERATION_MODE == TIMER0_u8_INITIAL_NORMAL_MODE) || (TIMER0_u8_INITIAL_WAVE_GENERATION_MODE == TIMER0_u8_INITIAL_CTC))
+			{
+				CLR_BIT(TIMER0_u8_TCCR0_REG , TIMER0_TCCR0_COM01_BIT);
+				CLR_BIT(TIMER0_u8_TCCR0_REG , TIMER0_TCCR0_COM00_BIT);
+			}
+			else
+			{
+				Local_u8ErrorState = STD_TYPES_NOK;
+			}
+			break;
+		case TIMER0_u8_INITIAL_NON_PWM_TOGG_OC0_ON_COMPARE_MATCH:
+			if((TIMER0_u8_INITIAL_WAVE_GENERATION_MODE == TIMER0_u8_INITIAL_NORMAL_MODE) || (TIMER0_u8_INITIAL_WAVE_GENERATION_MODE == TIMER0_u8_INITIAL_CTC))
+			{
+				CLR_BIT(TIMER0_u8_TCCR0_REG , TIMER0_TCCR0_COM01_BIT);
+				SET_BIT(TIMER0_u8_TCCR0_REG , TIMER0_TCCR0_COM00_BIT);
+			}
+			else
+			{
+				Local_u8ErrorState = STD_TYPES_NOK;
+			}
+			break;
+		case TIMER0_u8_INITIAL_NON_PWM_CLR_OC0_ON_COMPARE_MATCH:
+			if((TIMER0_u8_INITIAL_WAVE_GENERATION_MODE == TIMER0_u8_INITIAL_NORMAL_MODE) || (TIMER0_u8_INITIAL_WAVE_GENERATION_MODE == TIMER0_u8_INITIAL_CTC))
+			{
+				SET_BIT(TIMER0_u8_TCCR0_REG , TIMER0_TCCR0_COM01_BIT);
+				CLR_BIT(TIMER0_u8_TCCR0_REG , TIMER0_TCCR0_COM00_BIT);
+			}
+			else
+			{
+				Local_u8ErrorState = STD_TYPES_NOK;
+			}
+			break;
+		case TIMER0_u8_INITIAL_NON_PWM_SET_OC0_ON_COMPARE_MATCH:
+			if((TIMER0_u8_INITIAL_WAVE_GENERATION_MODE == TIMER0_u8_INITIAL_NORMAL_MODE) || (TIMER0_u8_INITIAL_WAVE_GENERATION_MODE == TIMER0_u8_INITIAL_CTC))
+			{
+				SET_BIT(TIMER0_u8_TCCR0_REG , TIMER0_TCCR0_COM01_BIT);
+				SET_BIT(TIMER0_u8_TCCR0_REG , TIMER0_TCCR0_COM00_BIT);
+			}
+			else
+			{
+				Local_u8ErrorState = STD_TYPES_NOK;
+			}
+			break;
+			
+			
+			
+		case TIMER0_u8_INITIAL_FAST_PWM_NORMAL_PORT_OPERATION_DIS_OC0:
+			if(TIMER0_u8_INITIAL_WAVE_GENERATION_MODE == TIMER0_u8_INITIAL_FAST_PWM)
+			{
+				CLR_BIT(TIMER0_u8_TCCR0_REG , TIMER0_TCCR0_COM01_BIT);
+				CLR_BIT(TIMER0_u8_TCCR0_REG , TIMER0_TCCR0_COM00_BIT);
+			}
+			else
+			{
+				Local_u8ErrorState = STD_TYPES_NOK;
+			}
+			break;
+		case TIMER0_u8_INITIAL_FAST_PWM_REVERSED:
+			if(TIMER0_u8_INITIAL_WAVE_GENERATION_MODE == TIMER0_u8_INITIAL_FAST_PWM)
+			{
+				CLR_BIT(TIMER0_u8_TCCR0_REG , TIMER0_TCCR0_COM01_BIT);
+				SET_BIT(TIMER0_u8_TCCR0_REG , TIMER0_TCCR0_COM00_BIT);
+			}
+			else
+			{
+				Local_u8ErrorState = STD_TYPES_NOK;
+			}
+			break;
+		case TIMER0_u8_INITIAL_FAST_PWM_CLR_OC0_ON_COMPARE_MATCH_SET_OC0_AT_TOP:
+			if(TIMER0_u8_INITIAL_WAVE_GENERATION_MODE == TIMER0_u8_INITIAL_FAST_PWM)
+			{
+				SET_BIT(TIMER0_u8_TCCR0_REG , TIMER0_TCCR0_COM01_BIT);
+				CLR_BIT(TIMER0_u8_TCCR0_REG , TIMER0_TCCR0_COM00_BIT);
+			}
+			else
+			{
+				Local_u8ErrorState = STD_TYPES_NOK;
+			}
+			break;
+		case TIMER0_u8_INITIAL_FAST_PWM_SET_OC0_ON_COMPARE_MATCH_CLR_OC0_AT_TOP:
+			if(TIMER0_u8_INITIAL_WAVE_GENERATION_MODE == TIMER0_u8_INITIAL_FAST_PWM)
+			{
+				SET_BIT(TIMER0_u8_TCCR0_REG , TIMER0_TCCR0_COM01_BIT);
+				SET_BIT(TIMER0_u8_TCCR0_REG , TIMER0_TCCR0_COM00_BIT);
+			}
+			else
+			{
+				Local_u8ErrorState = STD_TYPES_NOK;
+			}
+			break;
+		
+		
+		
+		case TIMER0_u8_INITIAL_PHASE_CORRECT_PWM_NORMAL_PORT_OPERATION_DIS_OC0:
+			if(TIMER0_u8_INITIAL_WAVE_GENERATION_MODE == TIMER0_u8_INITIAL_PWM_PHASE_CORRECT)
+			{
+				CLR_BIT(TIMER0_u8_TCCR0_REG , TIMER0_TCCR0_COM01_BIT);
+				CLR_BIT(TIMER0_u8_TCCR0_REG , TIMER0_TCCR0_COM00_BIT);
+			}
+			else
+			{
+				Local_u8ErrorState = STD_TYPES_NOK;
+			}
+			break;
+		case TIMER0_u8_INITIAL_PHASE_CORRECT_PWM_REVERSED:
+			if(TIMER0_u8_INITIAL_WAVE_GENERATION_MODE == TIMER0_u8_INITIAL_PWM_PHASE_CORRECT)
+			{
+				CLR_BIT(TIMER0_u8_TCCR0_REG , TIMER0_TCCR0_COM01_BIT);
+				SET_BIT(TIMER0_u8_TCCR0_REG , TIMER0_TCCR0_COM00_BIT);
+			}
+			else
+			{
+				Local_u8ErrorState = STD_TYPES_NOK;
+			}
+			break;
+		case TIMER0_u8_INITIAL_PHASE_CORRECT_PWM_CLR_OC0_ON_COMPARE_MATCH_UP_COUNTING_SET_OC0_DOWN_COUNTING:
+			if(TIMER0_u8_INITIAL_WAVE_GENERATION_MODE == TIMER0_u8_INITIAL_PWM_PHASE_CORRECT)
+			{
+				SET_BIT(TIMER0_u8_TCCR0_REG , TIMER0_TCCR0_COM01_BIT);
+				CLR_BIT(TIMER0_u8_TCCR0_REG , TIMER0_TCCR0_COM00_BIT);
+			}
+			else
+			{
+				Local_u8ErrorState = STD_TYPES_NOK;
+			}
+			break;
+		case TIMER0_u8_INITIAL_PHASE_CORRECT_PWM_SET_OC0_ON_COMPARE_MATCH_UP_COUNTING_CLR_OC0_DOWN_COUNTING:
+			if(TIMER0_u8_INITIAL_WAVE_GENERATION_MODE == TIMER0_u8_INITIAL_PWM_PHASE_CORRECT)
+			{
+				SET_BIT(TIMER0_u8_TCCR0_REG , TIMER0_TCCR0_COM01_BIT);
+				SET_BIT(TIMER0_u8_TCCR0_REG , TIMER0_TCCR0_COM00_BIT);
+			}
+			else
+			{
+				Local_u8ErrorState = STD_TYPES_NOK;
+			}
+			break;
+			
+			
+			
+		default:
+			Local_u8ErrorState = STD_TYPES_NOK;
+			break;
+	}
+	
+	
+	/*Interrupt Flag Selection*/
+	#if  TIMER0_u8_INITIAL_INTERRUPT_FLAG == TIMER0_u8_INITIAL_OVERFLOW_FLAG
+		CLR_BIT(TIMER0_u8_TIMSK_REG , TIMER0_TIMSK_OCIE0_BIT);
+		SET_BIT(TIMER0_u8_TIMSK_REG , TIMER0_TIMSK_TOIE0_BIT);
+	#elif  TIMER0_u8_INITIAL_INTERRUPT_FLAG == TIMER0_u8_INITIAL_OUTPUT_COMPARE_FLAG
+		SET_BIT(TIMER0_u8_TIMSK_REG , TIMER0_TIMSK_OCIE0_BIT);
+		CLR_BIT(TIMER0_u8_TIMSK_REG , TIMER0_TIMSK_TOIE0_BIT);
+	#elif  TIMER0_u8_INITIAL_INTERRUPT_FLAG == TIMER0_u8_INITIAL_NO_ENABLED_INTERRUPTS
+		CLR_BIT(TIMER0_u8_TIMSK_REG , TIMER0_TIMSK_OCIE0_BIT);
+		CLR_BIT(TIMER0_u8_TIMSK_REG , TIMER0_TIMSK_TOIE0_BIT);
+	#endif
+	
+	
+	/////*Set preload value*/
+	////TIMER0_u8_TCNT0_REG = Copy_u8PreloadValue;
+	/////*pass preolad value to OV ISR function*/
+	////TIMER0_u8PreloadValue = Copy_u8PreloadValue;
+	
+	/////*Set OCR value*/
+	////TIMER0_u8_OCR0_REG = Copy_u8OCR_Value;
+	
+	
+	/////*Check the timer mode*/
+	////#if TIMER0_u8ModeCheck == 0
+	////	/*SET Preload Value*/
+	////	TIMER0_u8_TCNT0_REG = Copy_u8PreloadValue;
+	////	TIMER0_u8PreloadValue = Copy_u8PreloadValue;
+	////	TIMER0_u8_OCR0_REG = Copy_u8OCR_Value;
+	////#elif TIMER0_u8ModeCheck == 1
+	////	/*SET OCR Value*/
+	////	TIMER0_u8_OCR0_REG = Copy_u8OCR_Value;
+	////#elif TIMER0_u8ModeCheck == 3
+	////	/*SET OCR Value*/
+	////	TIMER0_u8_OCR0_REG = Copy_u8OCR_Value;
+	////#endif
+	
+	
+	/*Clock Selection - Final Initialization Step*/					
+	#if TIMER0_u8_INITIAL_CLOCK_SELECTION == TIMER0_u8_INITIAL_NO_CLOCK_SOURCE							//000
+		CLR_BIT(TIMER0_u8_TCCR0_REG , TIMER0_TCCR0_CS02_BIT);					
+		CLR_BIT(TIMER0_u8_TCCR0_REG , TIMER0_TCCR0_CS01_BIT);					
+		CLR_BIT(TIMER0_u8_TCCR0_REG , TIMER0_TCCR0_CS00_BIT);					
+	#elif TIMER0_u8_INITIAL_CLOCK_SELECTION == TIMER0_u8_INITIAL_NO_PRESCALLING							//001
+		CLR_BIT(TIMER0_u8_TCCR0_REG , TIMER0_TCCR0_CS02_BIT);					
+		CLR_BIT(TIMER0_u8_TCCR0_REG , TIMER0_TCCR0_CS01_BIT);					
+		SET_BIT(TIMER0_u8_TCCR0_REG , TIMER0_TCCR0_CS00_BIT);					
+	#elif TIMER0_u8_INITIAL_CLOCK_SELECTION == TIMER0_u8_INITIAL_PRESCALER_8							//010
+		CLR_BIT(TIMER0_u8_TCCR0_REG , TIMER0_TCCR0_CS02_BIT);					
+		SET_BIT(TIMER0_u8_TCCR0_REG , TIMER0_TCCR0_CS01_BIT);					
+		CLR_BIT(TIMER0_u8_TCCR0_REG , TIMER0_TCCR0_CS00_BIT);					
+	#elif TIMER0_u8_INITIAL_CLOCK_SELECTION == TIMER0_u8_INITIAL_PRESCALER_64							//011
+		CLR_BIT(TIMER0_u8_TCCR0_REG , TIMER0_TCCR0_CS02_BIT);					
+		SET_BIT(TIMER0_u8_TCCR0_REG , TIMER0_TCCR0_CS01_BIT);					
+		SET_BIT(TIMER0_u8_TCCR0_REG , TIMER0_TCCR0_CS00_BIT);					
+	#elif TIMER0_u8_INITIAL_CLOCK_SELECTION == TIMER0_u8_INITIAL_PRESCALER_256							//100
+		SET_BIT(TIMER0_u8_TCCR0_REG , TIMER0_TCCR0_CS02_BIT);					
+		CLR_BIT(TIMER0_u8_TCCR0_REG , TIMER0_TCCR0_CS01_BIT);					
+		CLR_BIT(TIMER0_u8_TCCR0_REG , TIMER0_TCCR0_CS00_BIT);					
+	#elif TIMER0_u8_INITIAL_CLOCK_SELECTION == TIMER0_u8_INITIAL_PRESCALER_1024							//101
+		SET_BIT(TIMER0_u8_TCCR0_REG , TIMER0_TCCR0_CS02_BIT);
+		CLR_BIT(TIMER0_u8_TCCR0_REG , TIMER0_TCCR0_CS01_BIT);
+		SET_BIT(TIMER0_u8_TCCR0_REG , TIMER0_TCCR0_CS00_BIT);
+	#elif TIMER0_u8_INITIAL_CLOCK_SELECTION == TIMER0_u8_INITIAL_EXTERNAL_CLOCK_SOURCE_FALLING_EDGE		//110
+		SET_BIT(TIMER0_u8_TCCR0_REG , TIMER0_TCCR0_CS02_BIT);
+		SET_BIT(TIMER0_u8_TCCR0_REG , TIMER0_TCCR0_CS01_BIT);
+		CLR_BIT(TIMER0_u8_TCCR0_REG , TIMER0_TCCR0_CS00_BIT);
+	#elif TIMER0_u8_INITIAL_CLOCK_SELECTION == TIMER0_u8_INITIAL_EXTERNAL_CLOCK_SOURCE_RISING_EDGE		//111
+		SET_BIT(TIMER0_u8_TCCR0_REG , TIMER0_TCCR0_CS02_BIT);
+		SET_BIT(TIMER0_u8_TCCR0_REG , TIMER0_TCCR0_CS01_BIT);
+		SET_BIT(TIMER0_u8_TCCR0_REG , TIMER0_TCCR0_CS00_BIT);
+	#endif
+	
+	return Local_u8ErrorState;
+}
+
+///-------------------------------------------------------------------------------------------------------------------------
+
+/*Prototype for ISR function of Timer0 OV*/
+void __vector_11(void)			__attribute__((signal));
+void __vector_11(void)
+{
+	static u16 Local_u16CounterOVF = 0;
+	Local_u16CounterOVF++;
+	if(Local_u16CounterOVF == TIMER0_u16OV_CounterValue)
+	{
+
+		/*Update Preload Value*/
+		TIMER0_u8_TCNT0_REG = TIMER0_u8PreloadValue;
+
+		/*Update OV Counter*/
+		Local_u16CounterOVF = 0;
+		
+		/*Call the application function*/
+		if(TIMER0_pfOV != NULL)
+		{
+			/*Dereferencing of the pointer*/
+			TIMER0_pfOV();
+		}
+	}
+}
+
+///-------------------------------------------------------------------------------------------------------------------------
+
+/*Prototype for ISR function of Timer0 Compare Match*/
+void __vector_10(void)			__attribute__((signal));
+void __vector_10(void)
+{
+	static u16 Local_u16CounterCTC = 0;
+	Local_u16CounterCTC++;
+	if(Local_u16CounterCTC == TIMER0_u16CTC_CounterValue)
+	{
+		/*Update OV Counter*/
+		Local_u16CounterCTC = 0;
+		
+		/*Call the application function*/
+		if(TIMER0_pfCTC != NULL)
+		{
+			/*Dereferencing of the pointer*/
+			TIMER0_pfCTC();
+		}
+	}
+}
+
+
+///------------------------------------------------------------------------------------------------------------------------
+///-------------------------------------------------------| TIMER1 |-------------------------------------------------------
+///------------------------------------------------------------------------------------------------------------------------
+/*Global pointer to function of Timer1 OV*/
+static	void (*TIMER1_pfOV)(void) = NULL;
+/*Global pointer to function of Timer1 CTC A*/
+static	void (*TIMER1_pfCTCA)(void) = NULL;
+/*Global pointer to function of Timer1 CTC B*/
+static	void (*TIMER1_pfCTCB)(void) = NULL;
+
+/*GLobal variable to hold the counter of OV numbers*/
+static  u32 TIMER1_u32OV_CounterValue;
+/*GLobal variable to hold the preload value of timer register*/
+static  u16	TIMER1_u16PreloadValue;
+
+/*GLobal variable to hold the counter of OV numbers in CTCA mode*/
+static  u32 TIMER1_u32CTCA_CounterValue;
+
+/*GLobal variable to hold the counter of OV numbers in CTCB mode*/
+static  u32 TIMER1_u32CTCB_CounterValue;
+
+/*Global variable to hold the ON Period & OFF Period*/
+volatile static u16 TIMER1_u16OnPeriod = 0;
+volatile static u16 TIMER1_u16OffPeriod = 0;
+
+
+u8   TIMER1_u8SetCallBack_OV		  (u32 Copy_u32CounterValue , void (*Copy_pf)(void))
+{
+	u8 Local_u8ErrorState = STD_TYPES_OK;
+	if(Copy_pf != NULL)
+	{
+		TIMER1_pfOV = Copy_pf;
+		TIMER1_u32OV_CounterValue = Copy_u32CounterValue;
+	}
+	else
+	{
+		Local_u8ErrorState = STD_TYPES_NOK;
+	}
+	return Local_u8ErrorState;
+}
+
+///-------------------------------------------------------------------------------------------------------------------------
+
+u8   TIMER1_u8SetCallBack_CTC_A		  (u32 Copy_u32CounterValue , void (*Copy_pf)(void))
+{
+	u8 Local_u8ErrorState = STD_TYPES_OK;
+	if(Copy_pf != NULL)
+	{
+		TIMER1_pfCTCA = Copy_pf;
+		TIMER1_u32CTCA_CounterValue = Copy_u32CounterValue;
+	}
+	else
+	{
+		Local_u8ErrorState = STD_TYPES_NOK;
+	}
+	return Local_u8ErrorState;
+	
+}
+
+///-------------------------------------------------------------------------------------------------------------------------
+
+u8   TIMER1_u8SetCallBack_CTC_B		  (u32 Copy_u32CounterValue , void (*Copy_pf)(void))
+{
+	u8 Local_u8ErrorState = STD_TYPES_OK;
+	if(Copy_pf != NULL)
+	{
+		TIMER1_pfCTCB = Copy_pf;
+		TIMER1_u32CTCB_CounterValue = Copy_u32CounterValue;
+	}
+	else
+	{
+		Local_u8ErrorState = STD_TYPES_NOK;
+	}
+	return Local_u8ErrorState;
+	
+}
+
+///-------------------------------------------------------------------------------------------------------------------------
+
+void TIMER1_voidSetCompareMatchValue_A(u16 Copy_u16OCR1AValue)
+{
+	/*Set OCRA value*/
+	TIMER1_u16_OCR1ALH_REG = Copy_u16OCR1AValue;
+	
+}
+
+///-------------------------------------------------------------------------------------------------------------------------
+
+void TIMER1_voidSetCompareMatchValue_B(u16 Copy_u16OCR1BValue)
+{
+	/*Set OCRB value*/
+	TIMER1_u16_OCR1BLH_REG = Copy_u16OCR1BValue;
+	
+}
+
+///-------------------------------------------------------------------------------------------------------------------------
+
+void TIMER1_voidSetPReloadValue		  (u16 Copy_u16PreloadValue)
+{
+	/*Set Preload Value*/
+	TIMER1_u16_TCNT1LH_REG = Copy_u16PreloadValue;
+	
+	/*Send it to global variable*/
+	TIMER1_u16PreloadValue = Copy_u16PreloadValue;
+	
+}
+
+///-------------------------------------------------------------------------------------------------------------------------
+
+void TIMER1_voidSetInputCaptureValue   (u16 Copy_u16InputCaptureValue)
+{
+	/*Set ICR1 value */
+	TIMER1_u16_ICR1LH_REG = Copy_u16InputCaptureValue;
+}
+
+///-------------------------------------------------------------------------------------------------------------------------
+
+u8   TIMER1_u8GetCounterValue(u16 * Copy_pu16CounterValue)
+{
+	u8 Local_u8ErrorState = STD_TYPES_OK;
+	if(Copy_pu16CounterValue != NULL)
+	{
+		*Copy_pu16CounterValue = TIMER1_u16_TCNT1LH_REG;
+	}
+	else
+	{
+		Local_u8ErrorState = STD_TYPES_NOK;
+	}
+
+	return Local_u8ErrorState;
+}
+
+///-------------------------------------------------------------------------------------------------------------------------
+
+void TIMER1_voidHW_ICUInit(void)
+{
+	/*Select Trigger source for ICU interrupt as raising edge*/
+	SET_BIT(TIMER1_u8_TCCR1B_REG , TIMER1_TCCR1B_ICES1_BIT);		//Will be changed in ISR function
+
+	/*INPUT_CAPTURE_INTERRUPT_ENABLE*/
+	SET_BIT(TIMER0_u8_TIMSK_REG , TIMER1_TIMSK_TICIE1_BIT);
+}
+
+///-------------------------------------------------------------------------------------------------------------------------
+
+u8   TIMER1_u8GetPWMOnPeriod		   (u16 * Copy_pu16OnTime)
+{
+	u8 Local_u8ErrorState = STD_TYPES_OK;
+	if(Copy_pu16OnTime != NULL)
+	{
+		*Copy_pu16OnTime = TIMER1_u16OnPeriod;
+	}
+	else
+	{
+		Local_u8ErrorState = STD_TYPES_NOK;
+	}
+	
+	return Local_u8ErrorState;
+}
+
+///-------------------------------------------------------------------------------------------------------------------------
+
+u8   TIMER1_u8GetPWMTotalPeriod		   (u32 * Copy_pu32TotalTime)
+{
+	u8 Local_u8ErrorState = STD_TYPES_OK;
+	if(Copy_pu32TotalTime != NULL)
+	{
+		*Copy_pu32TotalTime = TIMER1_u16OnPeriod + TIMER1_u16OffPeriod;
+	}
+	else
+	{
+		Local_u8ErrorState = STD_TYPES_NOK;
+	}
+	
+	return Local_u8ErrorState;
+}
+
+///-------------------------------------------------------------------------------------------------------------------------
+
+u8	 TIMER1_u8GerDutyCycle			   (u8 * Copy_pu8DutyCycle)
+{
+	u8 Local_u8ErrorState = STD_TYPES_OK;
+	if(Copy_pu8DutyCycle != NULL)
+	{
+		*Copy_pu8DutyCycle = (u8)(TIMER1_u16OnPeriod * 100UL)/(TIMER1_u16OnPeriod + TIMER1_u16OffPeriod);
+	}
+	else
+	{
+		Local_u8ErrorState = STD_TYPES_NOK;
+	}
+	
+	return Local_u8ErrorState;
+}
+
+///-------------------------------------------------------------------------------------------------------------------------
+u8   TIMER1_voidInit(void)
+{
+	u8 Local_u8ErrorState = STD_TYPES_OK;
+	
+	/*Wave Generation Mode Selection*/
+	#if TIMER1_u16_INITIAL_WAVE_GENERATION_MODE == TIMER1_u16_INITIAL_NORMAL_MODE									//0000
+		CLR_BIT(TIMER1_u8_TCCR1A_REG , TIMER1_TCCR1A_WGM10_BIT);	
+		CLR_BIT(TIMER1_u8_TCCR1A_REG , TIMER1_TCCR1A_WGM11_BIT);	
+		CLR_BIT(TIMER1_u8_TCCR1B_REG , TIMER1_TCCR1B_WGM12_BIT);
+		CLR_BIT(TIMER1_u8_TCCR1B_REG , TIMER1_TCCR1B_WGM13_BIT);
+	#elif TIMER1_u16_INITIAL_WAVE_GENERATION_MODE == TIMER1_u16_INITIAL_PWM_PHASE_CORRECT_8BIT                      //0001
+		SET_BIT(TIMER1_u8_TCCR1A_REG , TIMER1_TCCR1A_WGM10_BIT);	
+		CLR_BIT(TIMER1_u8_TCCR1A_REG , TIMER1_TCCR1A_WGM11_BIT);	
+		CLR_BIT(TIMER1_u8_TCCR1B_REG , TIMER1_TCCR1B_WGM12_BIT);
+		CLR_BIT(TIMER1_u8_TCCR1B_REG , TIMER1_TCCR1B_WGM13_BIT);																									
+	#elif TIMER1_u16_INITIAL_WAVE_GENERATION_MODE == TIMER1_u16_INITIAL_PWM_PHASE_CORRECT_9BIT                      //0010
+		CLR_BIT(TIMER1_u8_TCCR1A_REG , TIMER1_TCCR1A_WGM10_BIT);	
+		SET_BIT(TIMER1_u8_TCCR1A_REG , TIMER1_TCCR1A_WGM11_BIT);	
+		CLR_BIT(TIMER1_u8_TCCR1B_REG , TIMER1_TCCR1B_WGM12_BIT);
+		CLR_BIT(TIMER1_u8_TCCR1B_REG , TIMER1_TCCR1B_WGM13_BIT);																									
+	#elif TIMER1_u16_INITIAL_WAVE_GENERATION_MODE == TIMER1_u16_INITIAL_PWM_PHASE_CORRECT_10BIT                     //0011
+		SET_BIT(TIMER1_u8_TCCR1A_REG , TIMER1_TCCR1A_WGM10_BIT);	
+		SET_BIT(TIMER1_u8_TCCR1A_REG , TIMER1_TCCR1A_WGM11_BIT);	
+		CLR_BIT(TIMER1_u8_TCCR1B_REG , TIMER1_TCCR1B_WGM12_BIT);
+		CLR_BIT(TIMER1_u8_TCCR1B_REG , TIMER1_TCCR1B_WGM13_BIT);																								
+	#elif TIMER1_u16_INITIAL_WAVE_GENERATION_MODE == TIMER1_u16_INITIAL_CTC_TOP_OCR1A                               //0100
+		CLR_BIT(TIMER1_u8_TCCR1A_REG , TIMER1_TCCR1A_WGM10_BIT);	
+		CLR_BIT(TIMER1_u8_TCCR1A_REG , TIMER1_TCCR1A_WGM11_BIT);	
+		SET_BIT(TIMER1_u8_TCCR1B_REG , TIMER1_TCCR1B_WGM12_BIT);
+		CLR_BIT(TIMER1_u8_TCCR1B_REG , TIMER1_TCCR1B_WGM13_BIT);																									
+	#elif TIMER1_u16_INITIAL_WAVE_GENERATION_MODE == TIMER1_u16_INITIAL_FAST_PWM_8BIT                               //0101
+		SET_BIT(TIMER1_u8_TCCR1A_REG , TIMER1_TCCR1A_WGM10_BIT);	
+		CLR_BIT(TIMER1_u8_TCCR1A_REG , TIMER1_TCCR1A_WGM11_BIT);	
+		SET_BIT(TIMER1_u8_TCCR1B_REG , TIMER1_TCCR1B_WGM12_BIT);
+		CLR_BIT(TIMER1_u8_TCCR1B_REG , TIMER1_TCCR1B_WGM13_BIT);																											
+	#elif TIMER1_u16_INITIAL_WAVE_GENERATION_MODE == TIMER1_u16_INITIAL_FAST_PWM_9BIT                               //0110
+		CLR_BIT(TIMER1_u8_TCCR1A_REG , TIMER1_TCCR1A_WGM10_BIT);	
+		SET_BIT(TIMER1_u8_TCCR1A_REG , TIMER1_TCCR1A_WGM11_BIT);	
+		SET_BIT(TIMER1_u8_TCCR1B_REG , TIMER1_TCCR1B_WGM12_BIT);
+		CLR_BIT(TIMER1_u8_TCCR1B_REG , TIMER1_TCCR1B_WGM13_BIT);																											
+	#elif TIMER1_u16_INITIAL_WAVE_GENERATION_MODE == TIMER1_u16_INITIAL_FAST_PWM_10BIT                              //0111
+		SET_BIT(TIMER1_u8_TCCR1A_REG , TIMER1_TCCR1A_WGM10_BIT);	
+		SET_BIT(TIMER1_u8_TCCR1A_REG , TIMER1_TCCR1A_WGM11_BIT);	
+		SET_BIT(TIMER1_u8_TCCR1B_REG , TIMER1_TCCR1B_WGM12_BIT);
+		CLR_BIT(TIMER1_u8_TCCR1B_REG , TIMER1_TCCR1B_WGM13_BIT);																											
+	#elif TIMER1_u16_INITIAL_WAVE_GENERATION_MODE == TIMER1_u16_INITIAL_PWM_PHASE_FREQUENCY_CORRECT_TOP_ICR1        //1000
+		CLR_BIT(TIMER1_u8_TCCR1A_REG , TIMER1_TCCR1A_WGM10_BIT);	
+		CLR_BIT(TIMER1_u8_TCCR1A_REG , TIMER1_TCCR1A_WGM11_BIT);	
+		CLR_BIT(TIMER1_u8_TCCR1B_REG , TIMER1_TCCR1B_WGM12_BIT);
+		SET_BIT(TIMER1_u8_TCCR1B_REG , TIMER1_TCCR1B_WGM13_BIT);																											
+	#elif TIMER1_u16_INITIAL_WAVE_GENERATION_MODE == TIMER1_u16_INITIAL_PWM_PHASE_FREQUENCY_CORRECT_TOP_OCR1A       //1001
+		SET_BIT(TIMER1_u8_TCCR1A_REG , TIMER1_TCCR1A_WGM10_BIT);	
+		CLR_BIT(TIMER1_u8_TCCR1A_REG , TIMER1_TCCR1A_WGM11_BIT);	
+		CLR_BIT(TIMER1_u8_TCCR1B_REG , TIMER1_TCCR1B_WGM12_BIT);
+		SET_BIT(TIMER1_u8_TCCR1B_REG , TIMER1_TCCR1B_WGM13_BIT);																										
+	#elif TIMER1_u16_INITIAL_WAVE_GENERATION_MODE == TIMER1_u16_INITIAL_PWM_PHASE_CORRECT_TOP_ICR1                  //1010
+		CLR_BIT(TIMER1_u8_TCCR1A_REG , TIMER1_TCCR1A_WGM10_BIT);	
+		SET_BIT(TIMER1_u8_TCCR1A_REG , TIMER1_TCCR1A_WGM11_BIT);	
+		CLR_BIT(TIMER1_u8_TCCR1B_REG , TIMER1_TCCR1B_WGM12_BIT);
+		SET_BIT(TIMER1_u8_TCCR1B_REG , TIMER1_TCCR1B_WGM13_BIT);																									
+	#elif TIMER1_u16_INITIAL_WAVE_GENERATION_MODE == TIMER1_u16_INITIAL_PWM_PHASE_CORRECT_TOP_OCR1A                 //1011
+		SET_BIT(TIMER1_u8_TCCR1A_REG , TIMER1_TCCR1A_WGM10_BIT);	
+		SET_BIT(TIMER1_u8_TCCR1A_REG , TIMER1_TCCR1A_WGM11_BIT);	
+		CLR_BIT(TIMER1_u8_TCCR1B_REG , TIMER1_TCCR1B_WGM12_BIT);
+		SET_BIT(TIMER1_u8_TCCR1B_REG , TIMER1_TCCR1B_WGM13_BIT);																									
+	#elif TIMER1_u16_INITIAL_WAVE_GENERATION_MODE == TIMER1_u16_INITIAL_CTC_TOP_ICR1                                //1100
+		CLR_BIT(TIMER1_u8_TCCR1A_REG , TIMER1_TCCR1A_WGM10_BIT);	
+		CLR_BIT(TIMER1_u8_TCCR1A_REG , TIMER1_TCCR1A_WGM11_BIT);	
+		SET_BIT(TIMER1_u8_TCCR1B_REG , TIMER1_TCCR1B_WGM12_BIT);
+		SET_BIT(TIMER1_u8_TCCR1B_REG , TIMER1_TCCR1B_WGM13_BIT);																											
+	#elif TIMER1_u16_INITIAL_WAVE_GENERATION_MODE == TIMER1_u16_INITIAL_RESERVED                                    //1101
+		SET_BIT(TIMER1_u8_TCCR1A_REG , TIMER1_TCCR1A_WGM10_BIT);	
+		CLR_BIT(TIMER1_u8_TCCR1A_REG , TIMER1_TCCR1A_WGM11_BIT);	
+		SET_BIT(TIMER1_u8_TCCR1B_REG , TIMER1_TCCR1B_WGM12_BIT);
+		SET_BIT(TIMER1_u8_TCCR1B_REG , TIMER1_TCCR1B_WGM13_BIT);																											
+	#elif TIMER1_u16_INITIAL_WAVE_GENERATION_MODE == TIMER1_u16_INITIAL_FAST_PWM_TOP_ICR1                           //1110
+		CLR_BIT(TIMER1_u8_TCCR1A_REG , TIMER1_TCCR1A_WGM10_BIT);	
+		SET_BIT(TIMER1_u8_TCCR1A_REG , TIMER1_TCCR1A_WGM11_BIT);	
+		SET_BIT(TIMER1_u8_TCCR1B_REG , TIMER1_TCCR1B_WGM12_BIT);
+		SET_BIT(TIMER1_u8_TCCR1B_REG , TIMER1_TCCR1B_WGM13_BIT);																											
+	#elif TIMER1_u16_INITIAL_WAVE_GENERATION_MODE == TIMER1_u16_INITIAL_FAST_PWM_TOP_OCR1A                          //1111
+		SET_BIT(TIMER1_u8_TCCR1A_REG , TIMER1_TCCR1A_WGM10_BIT);	
+		SET_BIT(TIMER1_u8_TCCR1A_REG , TIMER1_TCCR1A_WGM11_BIT);	
+		SET_BIT(TIMER1_u8_TCCR1B_REG , TIMER1_TCCR1B_WGM12_BIT);
+		SET_BIT(TIMER1_u8_TCCR1B_REG , TIMER1_TCCR1B_WGM13_BIT);
+	#endif
+	
+	
+	/*Compare Match Mode Selection A*/
+	switch(TIMER1_u16_INITIAL_COMPARE_MATCH_MODE_OC1A)
+	{
+		case TIMER1_u16_INITIAL_NON_PWM_NORMAL_PORT_OPERATION_DIS_OC1A:
+			if((TIMER1_u16_INITIAL_WAVE_GENERATION_MODE == TIMER1_u16_INITIAL_NORMAL_MODE) || (TIMER1_u16_INITIAL_WAVE_GENERATION_MODE == TIMER1_u16_INITIAL_CTC_TOP_OCR1A) || (TIMER1_u16_INITIAL_WAVE_GENERATION_MODE == TIMER1_u16_INITIAL_CTC_TOP_ICR1))
+			{
+				CLR_BIT(TIMER1_u8_TCCR1A_REG , TIMER1_TCCR1A_COM1A1_BIT);
+				CLR_BIT(TIMER1_u8_TCCR1A_REG , TIMER1_TCCR1A_COM1A0_BIT);
+			}
+			else
+			{
+				Local_u8ErrorState = STD_TYPES_NOK;
+			}
+			break;
+		case TIMER1_u16_INITIAL_NON_PWM_TOGG_OC1A_ON_COMPARE_MATCH:
+			if((TIMER1_u16_INITIAL_WAVE_GENERATION_MODE == TIMER1_u16_INITIAL_NORMAL_MODE) || (TIMER1_u16_INITIAL_WAVE_GENERATION_MODE == TIMER1_u16_INITIAL_CTC_TOP_OCR1A) || (TIMER1_u16_INITIAL_WAVE_GENERATION_MODE == TIMER1_u16_INITIAL_CTC_TOP_ICR1))
+			{
+				CLR_BIT(TIMER1_u8_TCCR1A_REG , TIMER1_TCCR1A_COM1A1_BIT);
+				SET_BIT(TIMER1_u8_TCCR1A_REG , TIMER1_TCCR1A_COM1A0_BIT);
+			}
+			else
+			{
+				Local_u8ErrorState = STD_TYPES_NOK;
+			}
+			break;
+		case TIMER1_u16_INITIAL_NON_PWM_CLR_OC1A_ON_COMPARE_MATCH:
+			if((TIMER1_u16_INITIAL_WAVE_GENERATION_MODE == TIMER1_u16_INITIAL_NORMAL_MODE) || (TIMER1_u16_INITIAL_WAVE_GENERATION_MODE == TIMER1_u16_INITIAL_CTC_TOP_OCR1A) || (TIMER1_u16_INITIAL_WAVE_GENERATION_MODE == TIMER1_u16_INITIAL_CTC_TOP_ICR1))
+			{
+				SET_BIT(TIMER1_u8_TCCR1A_REG , TIMER1_TCCR1A_COM1A1_BIT);
+				CLR_BIT(TIMER1_u8_TCCR1A_REG , TIMER1_TCCR1A_COM1A0_BIT);
+			}
+			else
+			{
+				Local_u8ErrorState = STD_TYPES_NOK;
+			}
+			break;
+		case TIMER1_u16_INITIAL_NON_PWM_SET_OC1A_ON_COMPARE_MATCH_SET_OUTPUT_TO_HIGH:
+			if((TIMER1_u16_INITIAL_WAVE_GENERATION_MODE == TIMER1_u16_INITIAL_NORMAL_MODE) || (TIMER1_u16_INITIAL_WAVE_GENERATION_MODE == TIMER1_u16_INITIAL_CTC_TOP_OCR1A) || (TIMER1_u16_INITIAL_WAVE_GENERATION_MODE == TIMER1_u16_INITIAL_CTC_TOP_ICR1))
+			{
+				SET_BIT(TIMER1_u8_TCCR1A_REG , TIMER1_TCCR1A_COM1A1_BIT);
+				SET_BIT(TIMER1_u8_TCCR1A_REG , TIMER1_TCCR1A_COM1A0_BIT);
+			}
+			else
+			{
+				Local_u8ErrorState = STD_TYPES_NOK;
+			}
+			break;
+			
+			
+			
+		case TIMER1_u16_INITIAL_FAST_PWM_NORMAL_PORT_OPERATION_DIS_OC1A:
+			if((TIMER1_u16_INITIAL_WAVE_GENERATION_MODE == TIMER1_u16_INITIAL_FAST_PWM_8BIT) || (TIMER1_u16_INITIAL_WAVE_GENERATION_MODE == TIMER1_u16_INITIAL_FAST_PWM_9BIT) || (TIMER1_u16_INITIAL_WAVE_GENERATION_MODE == TIMER1_u16_INITIAL_FAST_PWM_10BIT) || (TIMER1_u16_INITIAL_WAVE_GENERATION_MODE == TIMER1_u16_INITIAL_FAST_PWM_TOP_ICR1) || (TIMER1_u16_INITIAL_WAVE_GENERATION_MODE == TIMER1_u16_INITIAL_FAST_PWM_TOP_OCR1A))
+			{
+				CLR_BIT(TIMER1_u8_TCCR1A_REG , TIMER1_TCCR1A_COM1A1_BIT);
+				CLR_BIT(TIMER1_u8_TCCR1A_REG , TIMER1_TCCR1A_COM1A0_BIT);
+			}
+			else
+			{
+				Local_u8ErrorState = STD_TYPES_NOK;
+			}
+			break;
+		case TIMER1_u16_INITIAL_FAST_PWM_WGM13_0_15_TOGG_OC1A_ON_COMPARE_MATCH:
+			if((TIMER1_u16_INITIAL_WAVE_GENERATION_MODE == TIMER1_u16_INITIAL_FAST_PWM_8BIT) || (TIMER1_u16_INITIAL_WAVE_GENERATION_MODE == TIMER1_u16_INITIAL_FAST_PWM_9BIT) || (TIMER1_u16_INITIAL_WAVE_GENERATION_MODE == TIMER1_u16_INITIAL_FAST_PWM_10BIT) || (TIMER1_u16_INITIAL_WAVE_GENERATION_MODE == TIMER1_u16_INITIAL_FAST_PWM_TOP_ICR1) || (TIMER1_u16_INITIAL_WAVE_GENERATION_MODE == TIMER1_u16_INITIAL_FAST_PWM_TOP_OCR1A))
+			{
+				CLR_BIT(TIMER1_u8_TCCR1A_REG , TIMER1_TCCR1A_COM1A1_BIT);
+				SET_BIT(TIMER1_u8_TCCR1A_REG , TIMER1_TCCR1A_COM1A0_BIT);
+			}
+			else
+			{
+				Local_u8ErrorState = STD_TYPES_NOK;
+			}
+			break;
+		case TIMER1_u16_INITIAL_FAST_PWM_CLR_OC1A_ON_COMPARE_MATCH_SET_OC1A_AT_TOP:
+			if((TIMER1_u16_INITIAL_WAVE_GENERATION_MODE == TIMER1_u16_INITIAL_FAST_PWM_8BIT) || (TIMER1_u16_INITIAL_WAVE_GENERATION_MODE == TIMER1_u16_INITIAL_FAST_PWM_9BIT) || (TIMER1_u16_INITIAL_WAVE_GENERATION_MODE == TIMER1_u16_INITIAL_FAST_PWM_10BIT) || (TIMER1_u16_INITIAL_WAVE_GENERATION_MODE == TIMER1_u16_INITIAL_FAST_PWM_TOP_ICR1) || (TIMER1_u16_INITIAL_WAVE_GENERATION_MODE == TIMER1_u16_INITIAL_FAST_PWM_TOP_OCR1A))
+			{
+				SET_BIT(TIMER1_u8_TCCR1A_REG , TIMER1_TCCR1A_COM1A1_BIT);
+				CLR_BIT(TIMER1_u8_TCCR1A_REG , TIMER1_TCCR1A_COM1A0_BIT);
+			}
+			else
+			{
+				Local_u8ErrorState = STD_TYPES_NOK;
+			}
+			break;
+		case TIMER1_u16_INITIAL_FAST_PWM_SET_OC1A_ON_COMPARE_MATCH_CLR_OC1A_AT_TOP:
+			if((TIMER1_u16_INITIAL_WAVE_GENERATION_MODE == TIMER1_u16_INITIAL_FAST_PWM_8BIT) || (TIMER1_u16_INITIAL_WAVE_GENERATION_MODE == TIMER1_u16_INITIAL_FAST_PWM_9BIT) || (TIMER1_u16_INITIAL_WAVE_GENERATION_MODE == TIMER1_u16_INITIAL_FAST_PWM_10BIT) || (TIMER1_u16_INITIAL_WAVE_GENERATION_MODE == TIMER1_u16_INITIAL_FAST_PWM_TOP_ICR1) || (TIMER1_u16_INITIAL_WAVE_GENERATION_MODE == TIMER1_u16_INITIAL_FAST_PWM_TOP_OCR1A))
+			{
+				SET_BIT(TIMER1_u8_TCCR1A_REG , TIMER1_TCCR1A_COM1A1_BIT);
+				SET_BIT(TIMER1_u8_TCCR1A_REG , TIMER1_TCCR1A_COM1A0_BIT);
+			}
+			else
+			{
+				Local_u8ErrorState = STD_TYPES_NOK;
+			}
+			break;
+		
+		
+		
+		case TIMER1_u16_INITIAL_PHASE_CORRECT_PWM_NORMAL_PORT_OPERATION_DIS_OC1A:
+			if((TIMER1_u16_INITIAL_WAVE_GENERATION_MODE == TIMER1_u16_INITIAL_PWM_PHASE_CORRECT_8BIT) || (TIMER1_u16_INITIAL_WAVE_GENERATION_MODE == TIMER1_u16_INITIAL_PWM_PHASE_CORRECT_9BIT) || (TIMER1_u16_INITIAL_WAVE_GENERATION_MODE == TIMER1_u16_INITIAL_PWM_PHASE_CORRECT_10BIT) || (TIMER1_u16_INITIAL_WAVE_GENERATION_MODE == TIMER1_u16_INITIAL_PWM_PHASE_FREQUENCY_CORRECT_TOP_ICR1) || (TIMER1_u16_INITIAL_WAVE_GENERATION_MODE == TIMER1_u16_INITIAL_PWM_PHASE_FREQUENCY_CORRECT_TOP_OCR1A) || (TIMER1_u16_INITIAL_WAVE_GENERATION_MODE == TIMER1_u16_INITIAL_PWM_PHASE_CORRECT_TOP_ICR1) || (TIMER1_u16_INITIAL_WAVE_GENERATION_MODE == TIMER1_u16_INITIAL_PWM_PHASE_CORRECT_TOP_OCR1A))
+			{
+				CLR_BIT(TIMER1_u8_TCCR1A_REG , TIMER1_TCCR1A_COM1A1_BIT);
+				CLR_BIT(TIMER1_u8_TCCR1A_REG , TIMER1_TCCR1A_COM1A0_BIT);
+			}
+			else
+			{
+				Local_u8ErrorState = STD_TYPES_NOK;
+			}
+			break;
+		case TIMER1_u16_INITIAL_PHASE_CORRECT_PWM_WGM13_0_9_14_TOGG_OC1A_ON_COMPARE_MATCH:
+			if((TIMER1_u16_INITIAL_WAVE_GENERATION_MODE == TIMER1_u16_INITIAL_PWM_PHASE_CORRECT_8BIT) || (TIMER1_u16_INITIAL_WAVE_GENERATION_MODE == TIMER1_u16_INITIAL_PWM_PHASE_CORRECT_9BIT) || (TIMER1_u16_INITIAL_WAVE_GENERATION_MODE == TIMER1_u16_INITIAL_PWM_PHASE_CORRECT_10BIT) || (TIMER1_u16_INITIAL_WAVE_GENERATION_MODE == TIMER1_u16_INITIAL_PWM_PHASE_FREQUENCY_CORRECT_TOP_ICR1) || (TIMER1_u16_INITIAL_WAVE_GENERATION_MODE == TIMER1_u16_INITIAL_PWM_PHASE_FREQUENCY_CORRECT_TOP_OCR1A) || (TIMER1_u16_INITIAL_WAVE_GENERATION_MODE == TIMER1_u16_INITIAL_PWM_PHASE_CORRECT_TOP_ICR1) || (TIMER1_u16_INITIAL_WAVE_GENERATION_MODE == TIMER1_u16_INITIAL_PWM_PHASE_CORRECT_TOP_OCR1A))
+			{
+				CLR_BIT(TIMER1_u8_TCCR1A_REG , TIMER1_TCCR1A_COM1A1_BIT);
+				SET_BIT(TIMER1_u8_TCCR1A_REG , TIMER1_TCCR1A_COM1A0_BIT);
+			}
+			else
+			{
+				Local_u8ErrorState = STD_TYPES_NOK;
+			}
+			break;
+		case TIMER1_u16_INITIAL_PHASE_CORRECT_PWM_CLR_OC1A_ON_COMPARE_MATCH_UP_COUNTING_SET_OC1A_DOWN_COUNTING:
+			if((TIMER1_u16_INITIAL_WAVE_GENERATION_MODE == TIMER1_u16_INITIAL_PWM_PHASE_CORRECT_8BIT) || (TIMER1_u16_INITIAL_WAVE_GENERATION_MODE == TIMER1_u16_INITIAL_PWM_PHASE_CORRECT_9BIT) || (TIMER1_u16_INITIAL_WAVE_GENERATION_MODE == TIMER1_u16_INITIAL_PWM_PHASE_CORRECT_10BIT) || (TIMER1_u16_INITIAL_WAVE_GENERATION_MODE == TIMER1_u16_INITIAL_PWM_PHASE_FREQUENCY_CORRECT_TOP_ICR1) || (TIMER1_u16_INITIAL_WAVE_GENERATION_MODE == TIMER1_u16_INITIAL_PWM_PHASE_FREQUENCY_CORRECT_TOP_OCR1A) || (TIMER1_u16_INITIAL_WAVE_GENERATION_MODE == TIMER1_u16_INITIAL_PWM_PHASE_CORRECT_TOP_ICR1) || (TIMER1_u16_INITIAL_WAVE_GENERATION_MODE == TIMER1_u16_INITIAL_PWM_PHASE_CORRECT_TOP_OCR1A))
+			{
+				SET_BIT(TIMER1_u8_TCCR1A_REG , TIMER1_TCCR1A_COM1A1_BIT);
+				CLR_BIT(TIMER1_u8_TCCR1A_REG , TIMER1_TCCR1A_COM1A0_BIT);
+			}
+			else
+			{
+				Local_u8ErrorState = STD_TYPES_NOK;
+			}
+			break;
+		case TIMER1_u16_INITIAL_PHASE_CORRECT_PWM_SET_OC1A_ON_COMPARE_MATCH_UP_COUNTING_CLR_OC1A_DOWN_COUNTING:
+			if((TIMER1_u16_INITIAL_WAVE_GENERATION_MODE == TIMER1_u16_INITIAL_PWM_PHASE_CORRECT_8BIT) || (TIMER1_u16_INITIAL_WAVE_GENERATION_MODE == TIMER1_u16_INITIAL_PWM_PHASE_CORRECT_9BIT) || (TIMER1_u16_INITIAL_WAVE_GENERATION_MODE == TIMER1_u16_INITIAL_PWM_PHASE_CORRECT_10BIT) || (TIMER1_u16_INITIAL_WAVE_GENERATION_MODE == TIMER1_u16_INITIAL_PWM_PHASE_FREQUENCY_CORRECT_TOP_ICR1) || (TIMER1_u16_INITIAL_WAVE_GENERATION_MODE == TIMER1_u16_INITIAL_PWM_PHASE_FREQUENCY_CORRECT_TOP_OCR1A) || (TIMER1_u16_INITIAL_WAVE_GENERATION_MODE == TIMER1_u16_INITIAL_PWM_PHASE_CORRECT_TOP_ICR1) || (TIMER1_u16_INITIAL_WAVE_GENERATION_MODE == TIMER1_u16_INITIAL_PWM_PHASE_CORRECT_TOP_OCR1A))
+			{
+				SET_BIT(TIMER1_u8_TCCR1A_REG , TIMER1_TCCR1A_COM1A1_BIT);
+				SET_BIT(TIMER1_u8_TCCR1A_REG , TIMER1_TCCR1A_COM1A0_BIT);
+			}
+			else
+			{
+				Local_u8ErrorState = STD_TYPES_NOK;
+			}
+			break;
+			
+			
+			
+		default:
+			Local_u8ErrorState = STD_TYPES_NOK;
+			break;
+	}
+
+
+	/*Compare Match Mode Selection B*/
+	switch(TIMER1_u16_INITIAL_COMPARE_MATCH_MODE_OC1B)
+	{
+		case TIMER1_u16_INITIAL_NON_PWM_NORMAL_PORT_OPERATION_DIS_OC1B:
+			if((TIMER1_u16_INITIAL_WAVE_GENERATION_MODE == TIMER1_u16_INITIAL_NORMAL_MODE) || (TIMER1_u16_INITIAL_WAVE_GENERATION_MODE == TIMER1_u16_INITIAL_CTC_TOP_OCR1A) || (TIMER1_u16_INITIAL_WAVE_GENERATION_MODE == TIMER1_u16_INITIAL_CTC_TOP_ICR1))
+			{
+				CLR_BIT(TIMER1_u8_TCCR1A_REG , TIMER1_TCCR1A_COM1B1_BIT);
+				CLR_BIT(TIMER1_u8_TCCR1A_REG , TIMER1_TCCR1A_COM1B0_BIT);
+			}
+			else
+			{
+				Local_u8ErrorState = STD_TYPES_NOK;
+			}
+			break;
+		case TIMER1_u16_INITIAL_NON_PWM_TOGG_OC1B_ON_COMPARE_MATCH:
+			if((TIMER1_u16_INITIAL_WAVE_GENERATION_MODE == TIMER1_u16_INITIAL_NORMAL_MODE) || (TIMER1_u16_INITIAL_WAVE_GENERATION_MODE == TIMER1_u16_INITIAL_CTC_TOP_OCR1A) || (TIMER1_u16_INITIAL_WAVE_GENERATION_MODE == TIMER1_u16_INITIAL_CTC_TOP_ICR1))
+			{
+				CLR_BIT(TIMER1_u8_TCCR1A_REG , TIMER1_TCCR1A_COM1B1_BIT);
+				SET_BIT(TIMER1_u8_TCCR1A_REG , TIMER1_TCCR1A_COM1B0_BIT);
+			}
+			else
+			{
+				Local_u8ErrorState = STD_TYPES_NOK;
+			}
+			break;
+		case TIMER1_u16_INITIAL_NON_PWM_CLR_OC1B_ON_COMPARE_MATCH:
+			if((TIMER1_u16_INITIAL_WAVE_GENERATION_MODE == TIMER1_u16_INITIAL_NORMAL_MODE) || (TIMER1_u16_INITIAL_WAVE_GENERATION_MODE == TIMER1_u16_INITIAL_CTC_TOP_OCR1A) || (TIMER1_u16_INITIAL_WAVE_GENERATION_MODE == TIMER1_u16_INITIAL_CTC_TOP_ICR1))
+			{
+				SET_BIT(TIMER1_u8_TCCR1A_REG , TIMER1_TCCR1A_COM1B1_BIT);
+				CLR_BIT(TIMER1_u8_TCCR1A_REG , TIMER1_TCCR1A_COM1B0_BIT);
+			}
+			else
+			{
+				Local_u8ErrorState = STD_TYPES_NOK;
+			}
+			break;
+		case TIMER1_u16_INITIAL_NON_PWM_SET_OC1B_ON_COMPARE_MATCH_SET_OUTPUT_TO_HIGH:
+			if((TIMER1_u16_INITIAL_WAVE_GENERATION_MODE == TIMER1_u16_INITIAL_NORMAL_MODE) || (TIMER1_u16_INITIAL_WAVE_GENERATION_MODE == TIMER1_u16_INITIAL_CTC_TOP_OCR1A) || (TIMER1_u16_INITIAL_WAVE_GENERATION_MODE == TIMER1_u16_INITIAL_CTC_TOP_ICR1))
+			{
+				SET_BIT(TIMER1_u8_TCCR1A_REG , TIMER1_TCCR1A_COM1B1_BIT);
+				SET_BIT(TIMER1_u8_TCCR1A_REG , TIMER1_TCCR1A_COM1B0_BIT);
+			}
+			else
+			{
+				Local_u8ErrorState = STD_TYPES_NOK;
+			}
+			break;
+			
+			
+			
+		case TIMER1_u16_INITIAL_FAST_PWM_NORMAL_PORT_OPERATION_DIS_OC1B:
+			if((TIMER1_u16_INITIAL_WAVE_GENERATION_MODE == TIMER1_u16_INITIAL_FAST_PWM_8BIT) || (TIMER1_u16_INITIAL_WAVE_GENERATION_MODE == TIMER1_u16_INITIAL_FAST_PWM_9BIT) || (TIMER1_u16_INITIAL_WAVE_GENERATION_MODE == TIMER1_u16_INITIAL_FAST_PWM_10BIT) || (TIMER1_u16_INITIAL_WAVE_GENERATION_MODE == TIMER1_u16_INITIAL_FAST_PWM_TOP_ICR1) || (TIMER1_u16_INITIAL_WAVE_GENERATION_MODE == TIMER1_u16_INITIAL_FAST_PWM_TOP_OCR1A))
+			{
+				CLR_BIT(TIMER1_u8_TCCR1A_REG , TIMER1_TCCR1A_COM1B1_BIT);
+				CLR_BIT(TIMER1_u8_TCCR1A_REG , TIMER1_TCCR1A_COM1B0_BIT);
+			}
+			else
+			{
+				Local_u8ErrorState = STD_TYPES_NOK;
+			}
+			break;
+		case TIMER1_u16_INITIAL_FAST_PWM_WGM13_0_15_DIS_OC1B_NORMAL_OPERATION:
+			if((TIMER1_u16_INITIAL_WAVE_GENERATION_MODE == TIMER1_u16_INITIAL_FAST_PWM_8BIT) || (TIMER1_u16_INITIAL_WAVE_GENERATION_MODE == TIMER1_u16_INITIAL_FAST_PWM_9BIT) || (TIMER1_u16_INITIAL_WAVE_GENERATION_MODE == TIMER1_u16_INITIAL_FAST_PWM_10BIT) || (TIMER1_u16_INITIAL_WAVE_GENERATION_MODE == TIMER1_u16_INITIAL_FAST_PWM_TOP_ICR1) || (TIMER1_u16_INITIAL_WAVE_GENERATION_MODE == TIMER1_u16_INITIAL_FAST_PWM_TOP_OCR1A))
+			{
+				CLR_BIT(TIMER1_u8_TCCR1A_REG , TIMER1_TCCR1A_COM1B1_BIT);
+				SET_BIT(TIMER1_u8_TCCR1A_REG , TIMER1_TCCR1A_COM1B0_BIT);
+			}
+			else
+			{
+				Local_u8ErrorState = STD_TYPES_NOK;
+			}
+			break;
+		case TIMER1_u16_INITIAL_FAST_PWM_CLR_OC1A_ON_COMPARE_MATCH_SET_OC1B_AT_TOP:
+			if((TIMER1_u16_INITIAL_WAVE_GENERATION_MODE == TIMER1_u16_INITIAL_FAST_PWM_8BIT) || (TIMER1_u16_INITIAL_WAVE_GENERATION_MODE == TIMER1_u16_INITIAL_FAST_PWM_9BIT) || (TIMER1_u16_INITIAL_WAVE_GENERATION_MODE == TIMER1_u16_INITIAL_FAST_PWM_10BIT) || (TIMER1_u16_INITIAL_WAVE_GENERATION_MODE == TIMER1_u16_INITIAL_FAST_PWM_TOP_ICR1) || (TIMER1_u16_INITIAL_WAVE_GENERATION_MODE == TIMER1_u16_INITIAL_FAST_PWM_TOP_OCR1A))
+			{
+				SET_BIT(TIMER1_u8_TCCR1A_REG , TIMER1_TCCR1A_COM1B1_BIT);
+				CLR_BIT(TIMER1_u8_TCCR1A_REG , TIMER1_TCCR1A_COM1B0_BIT);
+			}
+			else
+			{
+				Local_u8ErrorState = STD_TYPES_NOK;
+			}
+			break;
+		case TIMER1_u16_INITIAL_FAST_PWM_SET_OC1A_ON_COMPARE_MATCH_CLR_OC1B_AT_TOP:
+			if((TIMER1_u16_INITIAL_WAVE_GENERATION_MODE == TIMER1_u16_INITIAL_FAST_PWM_8BIT) || (TIMER1_u16_INITIAL_WAVE_GENERATION_MODE == TIMER1_u16_INITIAL_FAST_PWM_9BIT) || (TIMER1_u16_INITIAL_WAVE_GENERATION_MODE == TIMER1_u16_INITIAL_FAST_PWM_10BIT) || (TIMER1_u16_INITIAL_WAVE_GENERATION_MODE == TIMER1_u16_INITIAL_FAST_PWM_TOP_ICR1) || (TIMER1_u16_INITIAL_WAVE_GENERATION_MODE == TIMER1_u16_INITIAL_FAST_PWM_TOP_OCR1A))
+			{
+				SET_BIT(TIMER1_u8_TCCR1A_REG , TIMER1_TCCR1A_COM1B1_BIT);
+				SET_BIT(TIMER1_u8_TCCR1A_REG , TIMER1_TCCR1A_COM1B0_BIT);
+			}
+			else
+			{
+				Local_u8ErrorState = STD_TYPES_NOK;
+			}
+			break;
+		
+		
+		
+		case TIMER1_u16_INITIAL_PHASE_CORRECT_PWM_NORMAL_PORT_OPERATION_DIS_OC1B:
+			if((TIMER1_u16_INITIAL_WAVE_GENERATION_MODE == TIMER1_u16_INITIAL_PWM_PHASE_CORRECT_8BIT) || (TIMER1_u16_INITIAL_WAVE_GENERATION_MODE == TIMER1_u16_INITIAL_PWM_PHASE_CORRECT_9BIT) || (TIMER1_u16_INITIAL_WAVE_GENERATION_MODE == TIMER1_u16_INITIAL_PWM_PHASE_CORRECT_10BIT) || (TIMER1_u16_INITIAL_WAVE_GENERATION_MODE == TIMER1_u16_INITIAL_PWM_PHASE_FREQUENCY_CORRECT_TOP_ICR1) || (TIMER1_u16_INITIAL_WAVE_GENERATION_MODE == TIMER1_u16_INITIAL_PWM_PHASE_FREQUENCY_CORRECT_TOP_OCR1A) || (TIMER1_u16_INITIAL_WAVE_GENERATION_MODE == TIMER1_u16_INITIAL_PWM_PHASE_CORRECT_TOP_ICR1) || (TIMER1_u16_INITIAL_WAVE_GENERATION_MODE == TIMER1_u16_INITIAL_PWM_PHASE_CORRECT_TOP_OCR1A))
+			{
+				CLR_BIT(TIMER1_u8_TCCR1A_REG , TIMER1_TCCR1A_COM1B1_BIT);
+				CLR_BIT(TIMER1_u8_TCCR1A_REG , TIMER1_TCCR1A_COM1B0_BIT);
+			}
+			else
+			{
+				Local_u8ErrorState = STD_TYPES_NOK;
+			}
+			break;
+		case TIMER1_u16_INITIAL_PHASE_CORRECT_PWM_WGM13_0_9_14_DIS_OC1B_NORMAL_OPERATION:
+			if((TIMER1_u16_INITIAL_WAVE_GENERATION_MODE == TIMER1_u16_INITIAL_PWM_PHASE_CORRECT_8BIT) || (TIMER1_u16_INITIAL_WAVE_GENERATION_MODE == TIMER1_u16_INITIAL_PWM_PHASE_CORRECT_9BIT) || (TIMER1_u16_INITIAL_WAVE_GENERATION_MODE == TIMER1_u16_INITIAL_PWM_PHASE_CORRECT_10BIT) || (TIMER1_u16_INITIAL_WAVE_GENERATION_MODE == TIMER1_u16_INITIAL_PWM_PHASE_FREQUENCY_CORRECT_TOP_ICR1) || (TIMER1_u16_INITIAL_WAVE_GENERATION_MODE == TIMER1_u16_INITIAL_PWM_PHASE_FREQUENCY_CORRECT_TOP_OCR1A) || (TIMER1_u16_INITIAL_WAVE_GENERATION_MODE == TIMER1_u16_INITIAL_PWM_PHASE_CORRECT_TOP_ICR1) || (TIMER1_u16_INITIAL_WAVE_GENERATION_MODE == TIMER1_u16_INITIAL_PWM_PHASE_CORRECT_TOP_OCR1A))
+			{
+				CLR_BIT(TIMER1_u8_TCCR1A_REG , TIMER1_TCCR1A_COM1B1_BIT);
+				SET_BIT(TIMER1_u8_TCCR1A_REG , TIMER1_TCCR1A_COM1B0_BIT);
+			}
+			else
+			{
+				Local_u8ErrorState = STD_TYPES_NOK;
+			}
+			break;
+		case TIMER1_u16_INITIAL_PHASE_CORRECT_PWM_CLR_OC1A_ON_COMPARE_MATCH_UP_COUNTING_SET_OC1B_DOWN_COUNTING:
+			if((TIMER1_u16_INITIAL_WAVE_GENERATION_MODE == TIMER1_u16_INITIAL_PWM_PHASE_CORRECT_8BIT) || (TIMER1_u16_INITIAL_WAVE_GENERATION_MODE == TIMER1_u16_INITIAL_PWM_PHASE_CORRECT_9BIT) || (TIMER1_u16_INITIAL_WAVE_GENERATION_MODE == TIMER1_u16_INITIAL_PWM_PHASE_CORRECT_10BIT) || (TIMER1_u16_INITIAL_WAVE_GENERATION_MODE == TIMER1_u16_INITIAL_PWM_PHASE_FREQUENCY_CORRECT_TOP_ICR1) || (TIMER1_u16_INITIAL_WAVE_GENERATION_MODE == TIMER1_u16_INITIAL_PWM_PHASE_FREQUENCY_CORRECT_TOP_OCR1A) || (TIMER1_u16_INITIAL_WAVE_GENERATION_MODE == TIMER1_u16_INITIAL_PWM_PHASE_CORRECT_TOP_ICR1) || (TIMER1_u16_INITIAL_WAVE_GENERATION_MODE == TIMER1_u16_INITIAL_PWM_PHASE_CORRECT_TOP_OCR1A))
+			{
+				SET_BIT(TIMER1_u8_TCCR1A_REG , TIMER1_TCCR1A_COM1B1_BIT);
+				CLR_BIT(TIMER1_u8_TCCR1A_REG , TIMER1_TCCR1A_COM1B0_BIT);
+			}
+			else
+			{
+				Local_u8ErrorState = STD_TYPES_NOK;
+			}
+			break;
+		case TIMER1_u16_INITIAL_PHASE_CORRECT_PWM_SET_OC1A_ON_COMPARE_MATCH_UP_COUNTING_CLR_OC1B_DOWN_COUNTING:
+			if((TIMER1_u16_INITIAL_WAVE_GENERATION_MODE == TIMER1_u16_INITIAL_PWM_PHASE_CORRECT_8BIT) || (TIMER1_u16_INITIAL_WAVE_GENERATION_MODE == TIMER1_u16_INITIAL_PWM_PHASE_CORRECT_9BIT) || (TIMER1_u16_INITIAL_WAVE_GENERATION_MODE == TIMER1_u16_INITIAL_PWM_PHASE_CORRECT_10BIT) || (TIMER1_u16_INITIAL_WAVE_GENERATION_MODE == TIMER1_u16_INITIAL_PWM_PHASE_FREQUENCY_CORRECT_TOP_ICR1) || (TIMER1_u16_INITIAL_WAVE_GENERATION_MODE == TIMER1_u16_INITIAL_PWM_PHASE_FREQUENCY_CORRECT_TOP_OCR1A) || (TIMER1_u16_INITIAL_WAVE_GENERATION_MODE == TIMER1_u16_INITIAL_PWM_PHASE_CORRECT_TOP_ICR1) || (TIMER1_u16_INITIAL_WAVE_GENERATION_MODE == TIMER1_u16_INITIAL_PWM_PHASE_CORRECT_TOP_OCR1A))
+			{
+				SET_BIT(TIMER1_u8_TCCR1A_REG , TIMER1_TCCR1A_COM1B1_BIT);
+				SET_BIT(TIMER1_u8_TCCR1A_REG , TIMER1_TCCR1A_COM1B0_BIT);
+			}
+			else
+			{
+				Local_u8ErrorState = STD_TYPES_NOK;
+			}
+			break;
+			
+			
+			
+		default:
+			Local_u8ErrorState = STD_TYPES_NOK;
+			break;
+	}
+	
+	
+	/*Enabled Interrupt Selection*/		//////////////////////////NEED TO BE CHECKED, CAN WE ENABLE MORE  THAN INTERRUPT IN THE SAME PERIPHERAL??? If so we've to change that part
+	#if  TIMER1_u8_INITIAL_INTERRUPT_ENABLE == TIMER1_u16_INITIAL_OVERFLOW_INTERRUPT_ENABLE
+		SET_BIT(TIMER0_u8_TIMSK_REG , TIMER1_TIMSK_TOIE1_BIT);
+		CLR_BIT(TIMER0_u8_TIMSK_REG , TIMER1_TIMSK_OCIE1B_BIT);
+		CLR_BIT(TIMER0_u8_TIMSK_REG , TIMER1_TIMSK_OCIE1A_BIT);
+		CLR_BIT(TIMER0_u8_TIMSK_REG , TIMER1_TIMSK_TICIE1_BIT);
+	#elif  TIMER1_u8_INITIAL_INTERRUPT_ENABLE == TIMER1_u16_INITIAL_OUTPUT_COMPARE_A_MATCH_INTERRUPT_ENABLE
+		CLR_BIT(TIMER0_u8_TIMSK_REG , TIMER1_TIMSK_TOIE1_BIT);
+		CLR_BIT(TIMER0_u8_TIMSK_REG , TIMER1_TIMSK_OCIE1B_BIT);
+		SET_BIT(TIMER0_u8_TIMSK_REG , TIMER1_TIMSK_OCIE1A_BIT);
+		CLR_BIT(TIMER0_u8_TIMSK_REG , TIMER1_TIMSK_TICIE1_BIT);
+	#elif  TIMER1_u8_INITIAL_INTERRUPT_ENABLE == TIMER1_u16_INITIAL_OUTPUT_COMPARE_A_MATCH_INTERRUPT_ENABLE
+		CLR_BIT(TIMER0_u8_TIMSK_REG , TIMER1_TIMSK_TOIE1_BIT);
+		SET_BIT(TIMER0_u8_TIMSK_REG , TIMER1_TIMSK_OCIE1B_BIT);
+		CLR_BIT(TIMER0_u8_TIMSK_REG , TIMER1_TIMSK_OCIE1A_BIT);
+		CLR_BIT(TIMER0_u8_TIMSK_REG , TIMER1_TIMSK_TICIE1_BIT);
+	//#elif  TIMER1_u8_INITIAL_INTERRUPT_ENABLE == TIMER1_u16_INITIAL_INPUT_CAPTURE_INTERRUPT_ENABLE
+	//	CLR_BIT(TIMER0_u8_TIMSK_REG , TIMER1_TIMSK_TOIE1_BIT);
+	//	CLR_BIT(TIMER0_u8_TIMSK_REG , TIMER1_TIMSK_OCIE1B_BIT);
+	//	CLR_BIT(TIMER0_u8_TIMSK_REG , TIMER1_TIMSK_OCIE1A_BIT);
+	//	SET_BIT(TIMER0_u8_TIMSK_REG , TIMER1_TIMSK_TICIE1_BIT);
+	#elif  TIMER1_u8_INITIAL_INTERRUPT_ENABLE == TIMER1_u16_INITIAL_NO_ENABLED_INTERRUPTS
+		CLR_BIT(TIMER0_u8_TIMSK_REG , TIMER1_TIMSK_TOIE1_BIT);
+		CLR_BIT(TIMER0_u8_TIMSK_REG , TIMER1_TIMSK_OCIE1B_BIT);
+		CLR_BIT(TIMER0_u8_TIMSK_REG , TIMER1_TIMSK_OCIE1A_BIT);
+		CLR_BIT(TIMER0_u8_TIMSK_REG , TIMER1_TIMSK_TICIE1_BIT);
+	#endif
+	
+	
+	/*Clock Selection - Final Initialization Step*/					
+	#if TIMER1_u16_INITIAL_CLOCK_SELECTION == TIMER1_u16_INITIAL_NO_CLOCK_SOURCE							//000
+		CLR_BIT(TIMER1_u8_TCCR1B_REG , TIMER1_TCCR1B_CS12_BIT);					
+		CLR_BIT(TIMER1_u8_TCCR1B_REG , TIMER1_TCCR1B_CS11_BIT);					
+		CLR_BIT(TIMER1_u8_TCCR1B_REG , TIMER1_TCCR1B_CS10_BIT);					
+	#elif TIMER1_u16_INITIAL_CLOCK_SELECTION == TIMER1_u16_INITIAL_NO_PRESCALLING							//001
+		CLR_BIT(TIMER1_u8_TCCR1B_REG , TIMER1_TCCR1B_CS12_BIT);					
+		CLR_BIT(TIMER1_u8_TCCR1B_REG , TIMER1_TCCR1B_CS11_BIT);					
+		SET_BIT(TIMER1_u8_TCCR1B_REG , TIMER1_TCCR1B_CS10_BIT);					
+	#elif TIMER1_u16_INITIAL_CLOCK_SELECTION == TIMER1_u16_INITIAL_PRESCALER_8								//010
+		CLR_BIT(TIMER1_u8_TCCR1B_REG , TIMER1_TCCR1B_CS12_BIT);					
+		SET_BIT(TIMER1_u8_TCCR1B_REG , TIMER1_TCCR1B_CS11_BIT);					
+		CLR_BIT(TIMER1_u8_TCCR1B_REG , TIMER1_TCCR1B_CS10_BIT);					
+	#elif TIMER1_u16_INITIAL_CLOCK_SELECTION == TIMER1_u16_INITIAL_PRESCALER_64								//011
+		CLR_BIT(TIMER1_u8_TCCR1B_REG , TIMER1_TCCR1B_CS12_BIT);					
+		SET_BIT(TIMER1_u8_TCCR1B_REG , TIMER1_TCCR1B_CS11_BIT);					
+		SET_BIT(TIMER1_u8_TCCR1B_REG , TIMER1_TCCR1B_CS10_BIT);					
+	#elif TIMER1_u16_INITIAL_CLOCK_SELECTION == TIMER1_u16_INITIAL_PRESCALER_256							//100
+		SET_BIT(TIMER1_u8_TCCR1B_REG , TIMER1_TCCR1B_CS12_BIT);					
+		CLR_BIT(TIMER1_u8_TCCR1B_REG , TIMER1_TCCR1B_CS11_BIT);					
+		CLR_BIT(TIMER1_u8_TCCR1B_REG , TIMER1_TCCR1B_CS10_BIT);					
+	#elif TIMER1_u16_INITIAL_CLOCK_SELECTION == TIMER1_u16_INITIAL_PRESCALER_1024							//101
+		SET_BIT(TIMER1_u8_TCCR1B_REG , TIMER1_TCCR1B_CS12_BIT);
+		CLR_BIT(TIMER1_u8_TCCR1B_REG , TIMER1_TCCR1B_CS11_BIT);
+		SET_BIT(TIMER1_u8_TCCR1B_REG , TIMER1_TCCR1B_CS10_BIT);
+	#elif TIMER1_u16_INITIAL_CLOCK_SELECTION == TIMER1_u16_INITIAL_EXTERNAL_CLOCK_SOURCE_FALLING_EDGE		//110
+		SET_BIT(TIMER1_u8_TCCR1B_REG , TIMER1_TCCR1B_CS12_BIT);
+		SET_BIT(TIMER1_u8_TCCR1B_REG , TIMER1_TCCR1B_CS11_BIT);
+		CLR_BIT(TIMER1_u8_TCCR1B_REG , TIMER1_TCCR1B_CS10_BIT);
+	#elif TIMER1_u16_INITIAL_CLOCK_SELECTION == TIMER1_u16_INITIAL_EXTERNAL_CLOCK_SOURCE_RISING_EDGE		//111
+		SET_BIT(TIMER1_u8_TCCR1B_REG , TIMER1_TCCR1B_CS12_BIT);
+		SET_BIT(TIMER1_u8_TCCR1B_REG , TIMER1_TCCR1B_CS11_BIT);
+		SET_BIT(TIMER1_u8_TCCR1B_REG , TIMER1_TCCR1B_CS10_BIT);
+	#endif
+		return Local_u8ErrorState;
+}
+
+///-------------------------------------------------------------------------------------------------------------------------
+
+/*Prototype for ISR function of Timer1 OV*/
+void __vector_9(void)			__attribute__((signal));
+void __vector_9(void)
+{
+	static u32 Local_u32CounterOVF = 0;
+	Local_u32CounterOVF++;
+	if(Local_u32CounterOVF == TIMER1_u32OV_CounterValue)
+	{
+
+		/*Update Preload Value*/
+		TIMER1_u16_TCNT1LH_REG = TIMER1_u16PreloadValue;
+
+		/*Update OV Counter*/
+		Local_u32CounterOVF = 0;
+		
+		/*Call the application function*/
+		if(TIMER1_pfOV != NULL)
+		{
+			/*Dereferencing of the pointer*/
+			TIMER1_pfOV();
+		}
+	}
+}
+
+//-------------------------------------------------------------------------------------------------------------------------
+
+/*Prototype for ISR function of Timer1 CTC A*/
+void __vector_7(void)			__attribute__((signal));
+void __vector_7(void)
+{
+	static u32 Local_u32CounterCTCA = 0;
+	Local_u32CounterCTCA++;
+	if(Local_u32CounterCTCA == TIMER1_u32CTCA_CounterValue)
+	{
+		/*Update OV Counter*/
+		Local_u32CounterCTCA = 0;
+		
+		/*Call the application function*/
+		if(TIMER1_pfCTCA != NULL)
+		{
+			/*Dereferencing of the pointer*/
+			TIMER1_pfCTCA();
+		}
+	}
+	
+}
+
+///-------------------------------------------------------------------------------------------------------------------------
+
+/*Prototype for ISR function of Timer1 CTC B*/
+void __vector_8(void)			__attribute__((signal));
+void __vector_8(void)
+{
+	static u32 Local_u32CounterCTCB = 0;
+	Local_u32CounterCTCB++;
+	if(Local_u32CounterCTCB == TIMER1_u32CTCB_CounterValue)
+	{
+		/*Update OV Counter*/
+		Local_u32CounterCTCB = 0;
+		
+		/*Call the application function*/
+		if(TIMER1_pfCTCB != NULL)
+		{
+			/*Dereferencing of the pointer*/
+			TIMER1_pfCTCB();
+		}
+	}
+}
+
+///-------------------------------------------------------------------------------------------------------------------------
+
+/*Prototype for ISR function of Timer1 ISR mode*/
+void __vector_6(void)			__attribute__((signal));
+void __vector_6(void)
+{
+	u16 Local_u16TimerValue = TIMER1_u16_ICR1LH_REG;
+	static u8 Local_u8Flag = 0;
+	static u16 Local_u16OldValue = 0;
+	
+	if(Local_u8Flag == 0)		/*Raising Edge*/
+	{
+		/*Calculate the off period*/
+		TIMER1_u16OffPeriod = Local_u16TimerValue - Local_u16OldValue;
+		/*Change Trigger source to falling edge*/
+		CLR_BIT(TIMER1_u8_TCCR1B_REG , TIMER1_TCCR1B_ICES1_BIT);
+		/*Change the flag*/
+		Local_u8Flag = 1;
+	}
+	else						/*Falling Edge*/
+	{
+		/*Calculate the on period*/
+		TIMER1_u16OnPeriod = Local_u16TimerValue - Local_u16OldValue;
+		/*Change Trigger source to raising edge*/
+		SET_BIT(TIMER1_u8_TCCR1B_REG , TIMER1_TCCR1B_ICES1_BIT);
+		/*Cahnge the flag*/
+		Local_u8Flag = 0;
+	}
+	Local_u16OldValue = Local_u16TimerValue;				 //Get the value that is stored in ICR1 register
+}
