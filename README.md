@@ -1,6 +1,9 @@
 # Login_system_to_control_temperature_and_lights
 A system based on Atmega32 microcontroller used to control temperature and lights using analog sensors (LM35 and LDR sensors)
 ## System Description
+This system provides two main applications
+- **First:**Controlling the PWM of a FAN based on the reading we get from the LM35 sensor.
+- **Second:** Controlling room lights based on the reading we get from thr LDR sensor.
 ## System Components
 1. Atmega32 AVR microcontroller with the usage of these SWC
    - DIO
